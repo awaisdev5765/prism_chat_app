@@ -25,7 +25,7 @@ Works with **Ollama** (free, local), **OpenAI**, **Groq**, **DeepSeek**, **Toget
 
 ## Screenshots
 
-<img src="screenshots/chat_home.png" width="300" alt="Prism AI Chat — Home"/>
+<img src="screenshots/chat_home.png" width="280" alt="Chat"/> <img src="screenshots/settings.png" width="280" alt="Settings"/>
 
 ## Getting started
 
