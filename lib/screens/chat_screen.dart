@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:prism_ai/prism_ai.dart';
 import 'package:prism_markdown/prism_markdown.dart';
 
 import '../services/ai_service.dart';
+import 'settings_screen.dart';
 
-/// Full-screen AI chat with streaming markdown responses.
+const _suggestions = [
+  ('Explain a concept', Icons.lightbulb_outline),
+  ('Write code', Icons.code),
+  ('Brainstorm ideas', Icons.psychology_outlined),
+  ('Summarize text', Icons.summarize_outlined),
+];
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.service});
-
   final AiService service;
 
   @override
@@ -18,6 +25,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = AiChatController();
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
+  final _focusNode = FocusNode();
   bool _busy = false;
 
   @override
@@ -30,34 +38,35 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
   Future<void> _send(String text) async {
     if (text.trim().isEmpty || _busy) return;
     _inputController.clear();
+    _focusNode.unfocus();
+    HapticFeedback.lightImpact();
     setState(() => _busy = true);
-
-    controller.sendUserMessage(text);
-
+    _controller.sendUserMessage(text);
     try {
       await for (final event in widget.service.stream(text)) {
         switch (event) {
           case AiTextDelta(:final text):
-            controller.appendAssistantDelta(text);
+            _controller.appendAssistantDelta(text);
             _autoScroll();
-          case AiToolCall(:final name):
-            controller.appendAssistantDelta('\n🔧 $name\n');
           case AiDone():
-            controller.finishAssistant();
+            _controller.finishAssistant();
           case AiError(:final message):
-            controller.reportError(message);
+            _controller.reportError(message);
+          default:
+            break;
         }
       }
     } catch (e) {
-      controller.reportError(e.toString());
+      _controller.reportError(e.toString());
     } finally {
-      setState(() => _busy = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -66,11 +75,21 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOutCubic,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
         );
       }
     });
+  }
+
+  void _copy(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Copied'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 1),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ));
   }
 
   @override
@@ -80,69 +99,69 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        centerTitle: false,
         title: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: theme.colorScheme.primary,
-              child: Icon(Icons.auto_awesome, size: 20, color: theme.colorScheme.onPrimary),
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.auto_awesome, size: 18, color: Colors.white),
             ),
-            const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Prism AI', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-                Text(
-                  controller.isStreaming ? 'typing…' : 'online',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: controller.isStreaming
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+            const SizedBox(width: 10),
+            Text('Prism AI'),
           ],
         ),
-        elevation: 0,
-        scrolledUnderElevation: 1,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.add_comment_outlined,
+                color: isDark ? Colors.white70 : Colors.black54),
+            onPressed: _controller.clear,
+            tooltip: 'New chat',
+          ),
+          IconButton(
+            icon: Icon(Icons.settings_outlined,
+                color: isDark ? Colors.white70 : Colors.black54),
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => SettingsScreen(service: widget.service))),
+          ),
+        ],
       ),
       body: AnimatedBuilder(
-        animation: controller,
+        animation: _controller,
         builder: (context, _) {
-          final messages = controller.messages;
+          final messages = _controller.messages;
           return Column(
             children: [
               Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? const Color(0xFF121018)
-                        : const Color(0xFFF8F7FC),
-                  ),
-                  child: ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-                    itemCount: messages.length + (controller.isStreaming ? 1 : 0),
-                    itemBuilder: (context, i) {
-                      if (i >= messages.length) {
-                        return const _TypingIndicator();
-                      }
-                      final msg = messages[i];
-                      final isUser = msg.role == AiRole.user;
-                      return _MessageBubble(
-                        message: msg.content,
-                        isUser: isUser,
-                        theme: theme,
-                        useMarkdown: !isUser,
-                      );
-                    },
-                  ),
-                ),
+                child: messages.isEmpty && !_controller.isStreaming
+                    ? _EmptyState(onTap: _send)
+                    : ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        itemCount: messages.length +
+                            (_controller.isStreaming ? 1 : 0),
+                        itemBuilder: (context, i) {
+                          if (i >= messages.length) {
+                            return const _TypingIndicator();
+                          }
+                          final msg = messages[i];
+                          final isUser = msg.role == AiRole.user;
+                          return _MessageBubble(
+                            message: msg.content,
+                            isUser: isUser,
+                            markdown: !isUser,
+                            onCopy: () => _copy(msg.content),
+                          );
+                        },
+                      ),
               ),
               _InputBar(
                 controller: _inputController,
+                focusNode: _focusNode,
                 onSend: _send,
                 enabled: !_busy,
               ),
@@ -152,124 +171,171 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-
-  AiChatController get controller => _controller;
 }
 
-// ---------------------------------------------------------------------------
-// Message bubble
-// ---------------------------------------------------------------------------
-
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({
-    required this.message,
-    required this.isUser,
-    required this.theme,
-    this.useMarkdown = false,
-  });
-
-  final String message;
-  final bool isUser;
-  final ThemeData theme;
-  final bool useMarkdown;
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.onTap});
+  final void Function(String) onTap;
 
   @override
   Widget build(BuildContext context) {
-    final gradient = isUser
-        ? LinearGradient(colors: [
-            theme.colorScheme.primary,
-            theme.colorScheme.tertiary,
-          ])
-        : null;
-    final bgColor = isUser
-        ? null
-        : theme.colorScheme.surfaceContainerHighest;
-    final textColor = isUser
-        ? theme.colorScheme.onPrimary
-        : theme.colorScheme.onSurface;
-
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
-        builder: (context, opacity, child) {
-          return Opacity(
-            opacity: opacity,
-            child: Transform.translate(
-              offset: Offset(isUser ? 16 : -16, 0),
-              child: child,
-            ),
-          );
-        },
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 5),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * 0.80,
-          ),
-          decoration: BoxDecoration(
-            gradient: gradient,
-            color: gradient == null ? bgColor : null,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(isUser ? 18 : 4),
-              bottomRight: Radius.circular(isUser ? 4 : 18),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: theme.colorScheme.shadow.withValues(alpha: 0.06),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB).withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(16),
               ),
-            ],
-          ),
-          child: useMarkdown
-              ? PrismMarkdown(
-                  message,
-                  style: PrismMarkdownStyle(
-                    textStyle: theme.textTheme.bodyMedium?.copyWith(
-                      color: textColor,
-                      height: 1.5,
+              child: const Icon(Icons.auto_awesome, size: 30, color: Color(0xFF2563EB)),
+            ),
+            const SizedBox(height: 20),
+            Text('How can I help?',
+                style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 20),
+            ..._suggestions.map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => onTap(s.$1),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.05)
+                            : Colors.black.withValues(alpha: 0.03),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.08)
+                              : Colors.black.withValues(alpha: 0.06),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(s.$2, size: 18, color: isDark ? Colors.white60 : Colors.black45),
+                          const SizedBox(width: 12),
+                          Text(s.$1,
+                              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                          const Spacer(),
+                          Icon(Icons.arrow_forward_ios, size: 12, color: isDark ? Colors.white24 : Colors.black26),
+                        ],
+                      ),
                     ),
                   ),
-                )
-              : SelectableText(
-                  message,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: textColor,
-                    height: 1.4,
-                  ),
-                ),
+                )),
+          ],
         ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Typing indicator
-// ---------------------------------------------------------------------------
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({
+    required this.message,
+    required this.isUser,
+    required this.markdown,
+    required this.onCopy,
+  });
+  final String message;
+  final bool isUser;
+  final bool markdown;
+  final VoidCallback onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.80),
+        decoration: BoxDecoration(
+          color: isUser
+              ? const Color(0xFF2563EB)
+              : (isDark
+                  ? Colors.white.withValues(alpha: 0.06)
+                  : Colors.black.withValues(alpha: 0.04)),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isUser)
+              SelectableText(message,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                      color: Colors.white, height: 1.45))
+            else
+              PrismMarkdown(
+                message,
+                style: PrismMarkdownStyle(
+                  textStyle: theme.textTheme.bodyMedium?.copyWith(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.9)
+                        : const Color(0xFF1A1A1A),
+                    height: 1.55,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  'Just now',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 11,
+                    color: isUser
+                        ? Colors.white.withValues(alpha: 0.6)
+                        : (isDark ? Colors.white38 : Colors.black26),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: onCopy,
+                  child: Icon(
+                    Icons.copy_outlined,
+                    size: 14,
+                    color: isUser
+                        ? Colors.white.withValues(alpha: 0.6)
+                        : (isDark ? Colors.white38 : Colors.black26),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _TypingIndicator extends StatefulWidget {
   const _TypingIndicator();
-
   @override
   State<_TypingIndicator> createState() => _TypingIndicatorState();
 }
 
 class _TypingIndicatorState extends State<_TypingIndicator>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _anim = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat();
+  late final _controller = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1200))
+    ..repeat();
 
   @override
   void dispose() {
-    _anim.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
@@ -278,111 +344,115 @@ class _TypingIndicatorState extends State<_TypingIndicator>
     final color = Theme.of(context).colorScheme.onSurfaceVariant;
     return Align(
       alignment: Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(18)
-                .copyWith(bottomLeft: const Radius.circular(4)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: List.generate(3, (i) {
-              return ScaleTransition(
-                scale: Tween(begin: 0.6, end: 1.0).animate(
-                  CurvedAnimation(
-                    parent: _anim,
-                    curve: Interval(i * 0.25, i * 0.25 + 0.35,
-                        curve: Curves.easeInOut),
-                  ),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                  child: CircleAvatar(radius: 4.5, backgroundColor: color),
-                ),
-              );
-            }),
-          ),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? Colors.white.withValues(alpha: 0.06)
+              : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(3, (i) {
+            return ScaleTransition(
+              scale: Tween(begin: 0.5, end: 1.0).animate(CurvedAnimation(
+                parent: _controller,
+                curve: Interval(i * 0.25, i * 0.25 + 0.35, curve: Curves.easeInOut),
+              )),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: CircleAvatar(radius: 4, backgroundColor: color),
+              ),
+            );
+          }),
         ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Input bar
-// ---------------------------------------------------------------------------
-
 class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
     required this.onSend,
     required this.enabled,
+    required this.focusNode,
   });
-
   final TextEditingController controller;
   final void Function(String) onSend;
   final bool enabled;
+  final FocusNode focusNode;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
+      padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
+        color: isDark ? const Color(0xFF1A1A1A) : Colors.white,
         border: Border(
-          top: BorderSide(color: theme.colorScheme.outlineVariant, width: 0.5),
-        ),
-      ),
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  enabled: enabled,
-                  maxLines: 1,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: onSend,
-                  decoration: InputDecoration(
-                    hintText: 'Ask anything…',
-                    filled: true,
-                    fillColor: theme.colorScheme.surfaceContainerHighest
-                        .withValues(alpha: 0.5),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 18, vertical: 14),
-                  ),
-                  style: theme.textTheme.bodyMedium,
-                ),
-              ),
-              const SizedBox(width: 8),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                child: CircleAvatar(
-                  radius: 22,
-                  backgroundColor: enabled
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.surfaceContainerHighest,
-                  child: Icon(
-                    Icons.arrow_upward_rounded,
-                    size: 22,
-                    color: enabled
-                        ? theme.colorScheme.onPrimary
-                        : theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
+          top: BorderSide(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.06)
+                : Colors.black.withValues(alpha: 0.06),
+            width: 0.5,
           ),
         ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              focusNode: focusNode,
+              enabled: enabled,
+              maxLines: 5,
+              minLines: 1,
+              textInputAction: TextInputAction.send,
+              onSubmitted: onSend,
+              decoration: InputDecoration(
+                hintText: 'Message…',
+                filled: true,
+                fillColor: isDark
+                    ? Colors.white.withValues(alpha: 0.05)
+                    : Colors.black.withValues(alpha: 0.03),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: enabled ? () => onSend(controller.text) : null,
+            child: Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: enabled
+                    ? const Color(0xFF2563EB)
+                    : (isDark
+                        ? Colors.white.withValues(alpha: 0.1)
+                        : Colors.black.withValues(alpha: 0.06)),
+                borderRadius: BorderRadius.circular(19),
+              ),
+              child: Icon(
+                Icons.arrow_upward_rounded,
+                size: 20,
+                color: enabled
+                    ? Colors.white
+                    : (isDark ? Colors.white38 : Colors.black26),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
