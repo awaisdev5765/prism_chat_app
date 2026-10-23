@@ -23,6 +23,10 @@ Works with **Ollama** (free, local), **OpenAI**, **Groq**, **DeepSeek**, **Toget
 - Settings screen for provider configuration
 - Typing indicator, auto-scroll
 
+## Screenshots
+
+<img src="screenshots/chat_home.png" width="300" alt="Prism AI Chat — Home"/>
+
 ## Getting started
 
 1. Install [Ollama](https://ollama.ai) and pull a model: `ollama pull llama3`
